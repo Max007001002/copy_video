@@ -1,0 +1,405 @@
+# указываем ссылку для получения аудио-дорожки из видео
+yt_urls = ['https://www.youtube.com/watch?v=LRuszWRN4uI&list=PLv_mO3iQ2o2fZllHFsEniuy1D-2IXr8eU']
+YouTube_video_title = "Python в вопросах и ответах"
+
+!pip install git+https://github.com/ytdl-org/youtube-dl.git
+!pip install git+https://github.com/openai/whisper.git
+
+!pip install tiktoken==0.4.0 openai==0.28.0 langchain==0.0.281 faiss-cpu==1.7.4
+!pip install -qq python-docx
+!pip install -U pytube
+from IPython.display import clear_output
+clear_output()
+
+import whisper
+import os
+import gdown
+import requests
+import re
+import time
+from IPython.display import HTML, clear_output
+import subprocess
+from pathlib import Path
+import json
+from pytube import YouTube
+import tiktoken
+from docx import Document
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+import ipywidgets as widgets
+from IPython.display import display
+from tqdm.auto import tqdm
+import getpass
+import pickle
+from urllib.request import urlopen
+import openai
+import subprocess
+import codecs
+from langchain.chains import ConversationChain         # Импортируем класс для создания цепочек диалогов
+from langchain.chat_models import ChatOpenAI           # Импортируем класс для работы с чатами на базе OpenAI
+from langchain.llms import OpenAI
+from langchain.memory import ConversationBufferMemory  # Импортируем класс для управления памятью диалогов
+from langchain.text_splitter import MarkdownHeaderTextSplitter, Document, RecursiveCharacterTextSplitter
+from langchain.schema import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage
+)
+import urllib
+
+Получаем аудио-дорожку из видео с ютуб:
+
+# Получаем первую (и единственную) ссылку из списка yt_urls
+url = yt_urls[0]
+
+# Задаем путь и формат названия файла
+output_template = f'tmp/{YouTube_video_title}.m4a'
+
+# Загружаем аудио с лучшим качеством (в формате m4a) и сохраняем его под определенным именем
+!youtube-dl $url -f 'bestaudio[ext=m4a]' -o "$output_template"
+
+# Указываем путь к файлу, который будем обрабатывать
+mp4_file = output_template
+
+
+Делаем транскрибацию двух аудио-дорожек при помощи whisper
+
+
+# Функция для загрузки аудио-файла в колаб
+def download_file_from_google_drive(url_audio, output):
+
+    # Загрузка файла
+    gdown.download(url_audio, output, quiet=False)
+
+
+# URL файла на Google Диске
+url_audio = 'https://drive.google.com/file/d/1TLsB8EEMqATs18Iwacw5H3nceOFeO7ND/view?usp=sharing'
+# Путь, куда будет сохранён файл
+output = '/content/oop_python.m4a'
+# Вызов функции для загрузки файла
+download_file_from_google_drive(url_audio, output)
+
+
+# функция, которая берет все файлы с расширениями '.m4a' и '.mp4' из папки content в Google Colab
+# и прогоняет их через Whisper с указанными параметрами
+def transcribe_audio_files():
+    # Папка, где находятся файлы
+    folder_path = '/content/'
+
+    # Получаем список файлов в папке
+    files = os.listdir(folder_path)
+
+    # Фильтруем файлы, оставляя только те, что имеют расширение .m4a или .mp4
+    audio_files = [file for file in files if file.endswith('.m4a') or file.endswith('.mp4')]
+
+    for file in audio_files:
+        # Полный путь к файлу
+        file_path = os.path.join(folder_path, file)
+
+        # Команда для Whisper
+        command = f"whisper '{file_path}' --model large --language Russian"
+
+        # Выполнение команды
+        process = subprocess.run(command, shell=True, check=True, text=True)
+        print(f"Transcribed: {file}")
+
+# Вызов функции
+transcribe_audio_files()
+
+
+def get_key_ОpenAI():
+  openai.api_key = getpass.getpass(prompt='Введите секретный ключ для сервиса chatGPT: ')
+  os.environ["OPENAI_API_KEY"] = openai.api_key
+
+get_key_ОpenAI()
+
+Загружаем текстовый файл по ссылке
+
+
+# теперь скачаем текстовый файл по ссылке из гугл драйв в память колаб:
+url_txt = 'https://docs.google.com/document/d/1GwrAY4NoqPImiSMola-14ykVB5K-8iDlivWzvuEnMfA/edit?usp=sharing' #Объяснение алгоритмов сортировки с примерами на Python
+# функция для загрузки документа по ссылке из гугл драйв
+def load_and_save_doc(url: str, file_name: str):
+    # Извлечение ID документа и загрузка текста
+    doc_id = re.search('/document/d/([a-zA-Z0-9-_]+)', url).group(1)
+    text = requests.get(f'https://docs.google.com/document/d/{doc_id}/export?format=txt').text
+
+    # Сохранение файла
+    with open(os.path.join('/content', file_name), 'w') as file:
+        file.write(text)
+
+    print(f"File saved to /content/{file_name}")
+    return text
+load_and_save_doc(url_txt, file_name="sort_algo.txt")
+
+Делаем нейро-консультанта для ответов на вопросы:
+Разделяем текст на логические блоки с выделением названия раздела:
+
+#@title Разделяем текст на логические блоки с выделением названия раздела:
+system = '\u0412\u044B \u0433\u0435\u043D\u0438\u0439 \u0442\u0435\u043A\u0441\u0442\u0430, \u043A\u043E\u043F\u0438\u0440\u0430\u0439\u0442\u0438\u043D\u0433\u0430, \u043F\u0438\u0441\u0430\u0442\u0435\u043B\u044C\u0441\u0442\u0432\u0430. \u0412\u0430\u0448\u0430 \u0437\u0430\u0434\u0430\u0447\u0430 \u0440\u0430\u0441\u043F\u043E\u0437\u043D\u0430\u0442\u044C \u0440\u0430\u0437\u0434\u0435\u043B\u044B \u0432 \u0442\u0435\u043A\u0441\u0442\u0435 \u0438 \u0440\u0430\u0437\u0431\u0438\u0442\u044C \u0435\u0433\u043E \u043D\u0430 \u044D\u0442\u0438 \u0440\u0430\u0437\u0434\u0435\u043B\u044B \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044F \u0432\u0435\u0441\u044C \u0442\u0435\u043A\u0441\u0442 \u043D\u0430 100%' #@param {type:"string"}
+user = "\u041F\u043E\u0436\u0430\u043B\u0443\u0439\u0441\u0442\u0430, \u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u043F\u043E\u0434\u0443\u043C\u0430\u0435\u043C \u0448\u0430\u0433 \u0437\u0430 \u0448\u0430\u0433\u043E\u043C: \u041F\u043E\u0434\u0443\u043C\u0430\u0439\u0442\u0435, \u043A\u0430\u043A\u0438\u0435 \u0440\u0430\u0437\u0434\u0435\u043B\u044B \u0432 \u0442\u0435\u043A\u0441\u0442\u0435 \u0432\u044B \u043C\u043E\u0436\u0435\u0442\u0435 \u0440\u0430\u0441\u043F\u043E\u0437\u043D\u0430\u0442\u044C \u0438 \u043A\u0430\u043A\u043E\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043F\u043E \u0441\u043C\u044B\u0441\u043B\u0443 \u043C\u043E\u0436\u043D\u043E \u0434\u0430\u0442\u044C \u043A\u0430\u0436\u0434\u043E\u043C\u0443 \u0440\u0430\u0437\u0434\u0435\u043B\u0443. \u0414\u0430\u043B\u0435\u0435 \u043D\u0430\u043F\u0438\u0448\u0438\u0442\u0435 \u043E\u0442\u0432\u0435\u0442 \u043F\u043E \u0432\u0441\u0435\u043C\u0443 \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0435\u043C\u0443 \u043E\u0442\u0432\u0435\u0442\u0443 \u0432 \u043F\u043E\u0440\u044F\u0434\u043A\u0435: ## \u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u0440\u0430\u0437\u0434\u0435\u043B\u0430, \u043F\u043E\u0441\u043B\u0435 \u0447\u0435\u0433\u043E \u0432\u0435\u0441\u044C \u0442\u0435\u043A\u0441\u0442, \u043E\u0442\u043D\u043E\u0441\u044F\u0449\u0438\u0439\u0441\u044F \u043A \u044D\u0442\u043E\u043C\u0443 \u0440\u0430\u0437\u0434\u0435\u043B\u0443. \u0422\u0435\u043A\u0441\u0442:" #@param {type:"string"}
+
+temperature = 0 #@param {type: "slider", min: 0, max: 1, step:0.1}
+chunk_size = 5000 #@param {type: "slider", min: 1000, max: 7000, step:500}
+
+
+# @title Функции
+# Функция настройки стиля для переноса текста в выводе ячеек
+# для изменения стиля отображения текста, так чтобы предотвратить переполнение текста за границы ячейки вывода и обеспечить его перенос.
+def set_text_wrap_css():
+    css = '''
+    <style>
+    pre {
+        white-space: pre-wrap;
+    }
+    </style>
+    '''
+    display(HTML(css))
+
+get_ipython().events.register('pre_run_cell', set_text_wrap_css)
+
+# Функция подсчета количества токенов
+def num_tokens_from_messages(messages, model='gpt-3.5-turbo-0301'):
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoding = tiktoken.get_encoding('cl100k_base')
+
+    if model in ['gpt-3.5-turbo-0301', 'gpt-3.5-turbo-0613', 'gpt-3.5-turbo-16k', 'gpt-3.5-turbo', 'gpt-3.5-turbo-1106']:
+        num_tokens = 0
+
+        for message in messages:
+            num_tokens += 4
+
+            for key, value in message.items():
+                num_tokens += len(encoding.encode(value))
+
+                if key == 'name':
+                    num_tokens -= 1
+
+        num_tokens += 2
+        return num_tokens
+
+    else:
+        raise NotImplementedError(f'''num_tokens_from_messages() is not presently implemented for model {model}.''')
+
+
+# Функция дробления текста на чанки
+def split_text(txt_file, chunk_size=chunk_size):
+    source_chunks = []
+    splitter = RecursiveCharacterTextSplitter(separators=['\n', '\n\n', '. '], chunk_size=chunk_size, chunk_overlap=0)
+
+    for chunk in splitter.split_text(txt_file):
+        source_chunks.append(Document(page_content=chunk, metadata={}))
+
+    print(f'\n\nТекст разбит на {len(source_chunks)} чанков.')
+
+    return source_chunks
+
+
+# Функция получения ответа от модели
+def answer_index(system, user, chunk, temp=temperature, model='gpt-3.5-turbo-16k'):
+
+    messages = [
+        {'role': 'system', 'content': system},
+        {'role': 'user', 'content': user + f'{chunk}'}
+    ]
+
+    completion = openai.ChatCompletion.create(
+        model=model,
+        messages=messages,
+        temperature=temp
+    )
+
+    # Вывод количества токенов отключен
+    # print(f'\n====================\n\n{num_tokens_from_messages(messages)} токенов будет использовано на чанк\n\n')
+    answer = completion.choices[0].message.content
+
+    return answer
+
+
+def process_one_file(file_path, system, user):
+    with open(file_path, 'r') as txt_file:
+        text = txt_file.read()
+    source_chunks = split_text(text)
+    processed_text = ''
+    unprocessed_text = ''
+
+    for chunk in source_chunks:
+        attempt = 0
+
+        while attempt < 3:
+            try:
+                answer = answer_index(system, user, chunk.page_content)
+                break  # Успешно получили ответ, выходим из цикла попыток
+
+            except Exception as e:
+                attempt += 1  # Увеличиваем счетчик попыток
+                print(f'\n\nПопытка {attempt} не удалась из-за ошибки: {str(e)}')
+                time.sleep(10)  # Ожидаем перед следующей попыткой
+                if attempt == 3:
+                    answer = ''
+                    print(f'\n\nОбработка элемента {chunk} не удалась после 3 попыток')
+                    unprocessed_text += f'{chunk}\n\n'
+
+        processed_text += f'{answer}\n\n'  # Добавляем ответ в результат
+        print(f'{answer}')  # Выводим ответ
+
+    return processed_text, unprocessed_text
+
+
+# @title Запуск
+# Получаем список всех .txt файлов в папке /content
+txt_files = [f for f in os.listdir('/content') if f.endswith('.txt')]
+
+all_processed_text = ""
+all_unprocessed_text = ""
+
+for file in txt_files:
+    processed, unprocessed = process_one_file(f'/content/{file}', system, user)
+    all_processed_text += processed
+    all_unprocessed_text += unprocessed
+
+# Сохраняем обработанный текст в файл
+with open('/content/processed_texts.txt', 'w') as out_file:
+    out_file.write(all_processed_text)
+
+# Если нужно, сохраняем необработанный текст в другой файл
+with open('/content/unprocessed_texts.txt', 'w') as out_file:
+    out_file.write(all_unprocessed_text)
+
+
+# теперь в переменной
+all_processed_text
+
+# Определяем заголовки, на которые следует разбить текст
+headers_to_split_on = [
+    ("#", "Header 1"),
+    ("##", "Header 2"),
+    ("###", "Header 3")
+    ]
+# Создаем объект для разбиения текста на секции по заголовкам
+markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+
+# Получаем список документов, разбитых по заголовкам
+md_header_splits = markdown_splitter.split_text(all_processed_text)
+
+
+# можно посмотреть все чанки
+md_header_splits
+
+from langchain.embeddings.openai import OpenAIEmbeddings
+#from langchain.embeddings import OpenAIEmbeddings
+from langchain.vectorstores import FAISS
+
+# Инициализирум модель эмбеддингов
+embeddings = OpenAIEmbeddings()
+
+# Создадим индексную базу из разделенных фрагментов текста
+db = FAISS.from_documents(md_header_splits, embeddings)
+
+system_for_NA = """You are a teacher, an expert on the topic 'python programming language.' Answer in Russian.
+                  Your task is to answer the student's question only on the basis of the documents presented to you, without adding anything of your own."""
+
+def answer_neuro_assist(system, topic, search_index, verbose=1):
+
+    # Поиск релевантных отрезков из базы знаний
+    docs = search_index.similarity_search(topic, k=3)
+    if verbose: print('\n ===========================================: ')
+    message_content = re.sub(r'\n{2}', ' ', '\n '.join([f'\nExcerpt of document №{i+1}\n=====================' + doc.page_content + '\n' for i, doc in enumerate(docs)]))
+    if verbose: print('message_content :\n ======================================== \n', message_content)
+
+    messages = [
+        {"role": "system", "content": system_for_NA},
+        {"role": "user", "content": f"Answer the student's question. Answer in Russian. Do not mention the excerpts of the student response information document in your answer. Student response document: {message_content}\n\nStudent Question: \n{topic}"}
+    ]
+
+    if verbose: print('\n ===========================================: ')
+
+    completion = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=messages,
+        temperature=0
+    )
+    answer = completion.choices[0].message.content
+    return answer  # возвращает ответ
+
+topic="Какие есть инструменты в ООП"
+ans=answer_neuro_assist(system, topic, db, verbose=1)
+ans
+
+
+topic="Какой алгоритм сортировки лучше"
+ans=answer_neuro_assist(system, topic, db, verbose=1)
+ans
+
+Делаем методичку:
+
+#@title Обрабатываем каждый чанк, выделяя только суть для методички
+system = "\u0412\u044B \u0433\u0435\u043D\u0438\u0439 \u043A\u043E\u043F\u0438\u0440\u0430\u0439\u0442\u0438\u043D\u0433\u0430, \u044D\u043A\u0441\u043F\u0435\u0440\u0442 \u0432 \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0438 \u043D\u0430 \u043F\u0430\u0439\u0442\u043E\u043D . \u0412\u044B \u043F\u043E\u043B\u0443\u0447\u0430\u0435\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043B \u043D\u0435\u043E\u0431\u0440\u0430\u0431\u043E\u0442\u0430\u043D\u043D\u043E\u0433\u043E \u0442\u0435\u043A\u0441\u0442\u0430 \u043F\u043E \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0435\u043D\u043D\u043E\u0439 \u0442\u0435\u043C\u0435. \u041D\u0443\u0436\u043D\u043E \u0438\u0437 \u044D\u0442\u043E\u0433\u043E \u0442\u0435\u043A\u0441\u0442\u0430 \u0432\u044B\u0434\u0435\u043B\u0438\u0442\u044C \u0441\u0430\u043C\u0443\u044E \u0441\u0443\u0442\u044C, \u0442\u043E\u043B\u044C\u043A\u043E \u0441\u0430\u043C\u043E\u0435 \u0432\u0430\u0436\u043D\u043E\u0435, \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0432 \u0432\u0441\u0435 \u043D\u0443\u0436\u043D\u044B\u0435\u0434\u0435\u0442\u0430\u043B\u0438, \u043D\u043E \u0443\u0431\u0440\u0430\u0432 \u0432\u0441\u044E \"\u0432\u043E\u0434\u0443\" \u0438 \u0441\u043B\u043E\u0432\u0430 (\u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0435\u043D\u0438\u044F), \u043D\u0435 \u043D\u0435\u0441\u0443\u0449\u0438\u0435 \u0441\u043C\u044B\u0441\u043B\u043E\u0432\u043E\u0439 \u043D\u0430\u0433\u0440\u0443\u0437\u043A\u0438." #@param {type:"string"}
+user = "\u0418\u0437 \u0434\u0430\u043D\u043D\u043E\u0433\u043E \u0442\u0435\u043A\u0441\u0442\u0430 \u0432\u044B\u0434\u0435\u043B\u0438 \u0442\u043E\u043B\u044C\u043A\u043E \u0446\u0435\u043D\u043D\u0443\u044E \u0441 \u0442\u043E\u0447\u043A\u0438 \u0437\u0440\u0435\u043D\u0438\u044F \u0442\u0435\u043C\u044B \"\u041F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435 \u043D\u0430 \u043F\u0430\u0439\u0442\u043E\u043D\" \u0438\u043D\u0444\u043E\u0440\u043C\u0430\u0446\u0438\u044E. \u0423\u0434\u0430\u043B\u0438 \u0432\u0441\u044E \"\u0432\u043E\u0434\u0443\". \u0412 \u0438\u0442\u043E\u0433\u0435 \u0443 \u0442\u0435\u0431\u044F \u0434\u043E\u043B\u0436\u0435\u043D \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u0441\u044F \u0440\u0430\u0437\u0434\u0435\u043B \u0434\u043B\u044F \u043C\u0435\u0442\u043E\u0434\u0438\u0447\u043A\u0438 \u043F\u043E \u0443\u043A\u0430\u0437\u0430\u043D\u043D\u043E\u0439 \u0442\u0435\u043C\u0435. \u041E\u043F\u0438\u0440\u0430\u0439\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043D\u0430 \u0434\u0430\u043D\u043D\u044B\u0439 \u0442\u0435\u0431\u0435 \u0442\u0435\u043A\u0441\u0442, \u043D\u0435 \u043F\u0440\u0438\u0434\u0443\u043C\u044B\u0432\u0430\u0439 \u043D\u0438\u0447\u0435\u0433\u043E \u043E\u0442 \u0441\u0435\u0431\u044F. \u041E\u0442\u0432\u0435\u0442 \u043D\u0443\u0436\u0435\u043D \u0432 \u0444\u043E\u0440\u043C\u0430\u0442\u0435 ## \u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u0440\u0430\u0437\u0434\u0435\u043B\u0430, \u0438 \u0434\u0430\u043B\u0435\u0435 \u0432\u044B\u0434\u0435\u043B\u0435\u043D\u043D\u0430\u044F \u0442\u043E\u0431\u043E\u0439 \u0446\u0435\u043D\u043D\u0430\u044F \u0438\u043D\u0444\u043E\u0440\u043C\u0430\u0446\u0438\u044F \u0438\u0437 \u0442\u0435\u043A\u0441\u0442\u0430. \u0415\u0441\u043B\u0438 \u0432 \u0442\u0435\u043A\u0441\u0442\u0435 \u043D\u0435 \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u0442\u0441\u044F \u0446\u0435\u043D\u043D\u043E\u0439 \u0438\u043D\u0444\u043E\u0440\u043C\u0430\u0446\u0438\u0438, \u0442\u043E \u043E\u0441\u0442\u0430\u0432\u044C \u0442\u043E\u043B\u044C\u043A\u043E  \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u0440\u0430\u0437\u0434\u0435\u043B\u0430, \u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \"## \u0412\u0432\u0435\u0434\u0435\u043D\u0438\u0435\". \u0422\u0435\u043A\u0441\u0442:" #@param {type:"string"}
+
+temperature = 0 #@param {type: "slider", min: 0, max: 1, step:0.1}
+
+
+def process_documents(documents, system, user, temperature):
+    """
+    Функция принимает чанки, system, user, temperature для модели.
+    Она обрабатывает каждый документ, используя модель GPT, конкатенирует результаты в один текст и сохраняет в файл .txt.
+    """
+    processed_text_for_handbook = ""  # Строка для конкатенации обработанного текста
+
+    for document in documents:
+        # Форматируем метаданные для включения в чанк
+        metadata_str = "\n".join([f"{key}: {value}" for key, value in document.metadata.items()])
+        # Конкатенируем метаданные и содержание документа для передачи в функцию
+        chunk_with_metadata = f"{metadata_str}\n\n{document.page_content}"
+
+        # Получаем ответ от модели
+        answer = answer_index(system, user, chunk_with_metadata, temperature, model='gpt-3.5-turbo')
+        # Добавляем обработанный текст в общую строку
+        processed_text_for_handbook += f"{answer}\n\n"
+
+    # Записываем полученный текст в файл
+    with open('processed_documents.txt', 'w', encoding='utf-8') as f:
+        f.write(processed_text_for_handbook)
+
+    # Функция возвращает путь к файлу с обработанным текстом
+    return 'processed_documents.txt'
+
+# Применение функции
+file_path = process_documents(md_header_splits, system, user, temperature)
+print(f"Обработанный текст сохранен в файле: {file_path}")def process_documents(documents, system, user, temperature):
+    """
+    Функция принимает чанки, system, user, temperature для модели.
+    Она обрабатывает каждый документ, используя модель GPT, конкатенирует результаты в один текст и сохраняет в файл .txt.
+    """
+    processed_text_for_handbook = ""  # Строка для конкатенации обработанного текста
+
+    for document in documents:
+        # Форматируем метаданные для включения в чанк
+        metadata_str = "\n".join([f"{key}: {value}" for key, value in document.metadata.items()])
+        # Конкатенируем метаданные и содержание документа для передачи в функцию
+        chunk_with_metadata = f"{metadata_str}\n\n{document.page_content}"
+
+        # Получаем ответ от модели
+        answer = answer_index(system, user, chunk_with_metadata, temperature, model='gpt-3.5-turbo')
+        # Добавляем обработанный текст в общую строку
+        processed_text_for_handbook += f"{answer}\n\n"
+
+    # Записываем полученный текст в файл
+    with open('processed_documents.txt', 'w', encoding='utf-8') as f:
+        f.write(processed_text_for_handbook)
+
+    # Функция возвращает путь к файлу с обработанным текстом
+    return 'processed_documents.txt'
+
+# Применение функции
+file_path = process_documents(md_header_splits, system, user, temperature)
+print(f"Обработанный текст сохранен в файле: {file_path}")
+
+
+# Чтение и вывод содержимого методички:
+with open(file_path, 'r', encoding='utf-8') as f:
+    processed_text = f.read()
+# Вывести содержимое файла на экран
+print(processed_text)
